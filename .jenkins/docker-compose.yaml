@@ -1,0 +1,101 @@
+services:
+  eearly-mobile-keycloak-db:
+    image: postgres:17
+    container_name: '{{ component_name }}-db'
+    restart: unless-stopped
+
+    environment:
+      POSTGRES_DB: '{{ db_name }}'
+      POSTGRES_USER: '{{ db_user }}'
+      POSTGRES_PASSWORD: '{{ db_password }}'
+    
+    ports:
+      - '{{ db_port }}:5432'
+
+    volumes:
+      - postgres-data:/var/lib/postgresql/data
+
+    networks:
+      - keycloak-network
+
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U {{ db_user }}"]
+      interval: 10s
+      timeout: 5s
+      retries: 5
+
+  eearly-mobile-keycloak:
+    image: nexus.result.si/{{ project_name }}/{{ component_name }}:{{ tag }}
+    container_name: '{{ component_name }}'
+    restart: unless-stopped
+
+    depends_on:
+      eearly-mobile-keycloak-db:
+        condition: service_healthy
+
+    environment:
+      # Admin credentials
+      KEYCLOAK_ADMIN: '{{ admin_user }}'
+      KEYCLOAK_ADMIN_PASSWORD: '{{ admin_password }}'
+
+      # Hostname configuration (v2 options)
+      KC_HOSTNAME: '{{ hostname_url }}'
+      KC_HOSTNAME_STRICT: false
+
+      # Proxy configuration (v2 options)
+      KC_PROXY_HEADERS: xforwarded
+      PROXY_ADDRESS_FORWARDING: true
+
+      # HTTP enabled (reverse proxy handles HTTPS)
+      KC_HTTP_ENABLED: true
+
+      # Database configuration
+      KC_DB: postgres
+      KC_DB_URL: '{{ db_url }}'
+      KC_DB_USERNAME: '{{ db_user }}'
+      KC_DB_PASSWORD: '{{ db_password }}'
+
+      # Health and metrics
+      KC_HEALTH_ENABLED: true
+      KC_METRICS_ENABLED: true
+
+      # Logging
+      KC_LOG_LEVEL: INFO
+      KC_LOG_CONSOLE_OUTPUT: json
+      
+      # Cache configuration
+      KC_CACHE: local
+
+    ports:
+      - '{{ app_port }}:8080'         # Application port
+      - '{{ mgmt_port }}:9000'   # Management/health port
+
+    networks:
+      - keycloak-network
+      - proxy
+
+    command: ["start", "--optimized", "--import-realm"]
+
+    healthcheck:
+      test: ["CMD-SHELL", "exec 3<>/dev/tcp/localhost/9000 && echo -e 'GET /health/ready HTTP/1.1\\r\\nHost: localhost\\r\\nConnection: close\\r\\n\\r\\n' >&3 && cat <&3 | grep -q '200 OK'"]
+      interval: 30s
+      timeout: 10s
+      retries: 5
+      start_period: 120s
+    
+    labels:
+      - traefik.enable=true
+      - traefik.docker.network=proxy
+
+      - traefik.http.routers.{{ component_name }}.rule=Host(`{{ service_domain }}`)
+      - traefik.http.routers.{{ component_name }}.entrypoints=web
+
+volumes:
+  postgres-data:
+    driver: local
+
+networks:
+  keycloak-network:
+    driver: bridge
+  proxy:
+    external: true
